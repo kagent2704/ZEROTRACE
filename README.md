@@ -1,4 +1,10 @@
-# ZeroTrace
+## ZeroTrace — Secure Communication System
+
+A distributed, end-to-end encrypted messaging system with:
+- Client-side RSA encryption
+- Token-based authentication
+- Threat detection pipeline
+- Governance-controlled audit system
 
 ZeroTrace is now split into two runnable parts:
 
