@@ -1,0 +1,5 @@
+target
+data
+.idea
+server-test.out.log
+server-test.err.log

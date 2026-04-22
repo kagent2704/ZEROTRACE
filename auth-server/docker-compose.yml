@@ -1,0 +1,21 @@
+services:
+  zerotrace-auth-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zerotrace-auth-server
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SERVER_PORT: 8080
+      SPRING_DATASOURCE_URL: jdbc:h2:file:/data/zerotrace;AUTO_SERVER=TRUE
+      SPRING_DATASOURCE_USERNAME: sa
+      SPRING_DATASOURCE_PASSWORD: ""
+      ZEROTRACE_H2_CONSOLE_ENABLED: "false"
+    ports:
+      - "8080:8080"
+    volumes:
+      - zerotrace-data:/data
+
+volumes:
+  zerotrace-data:

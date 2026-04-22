@@ -1,0 +1,3 @@
+{$ZEROTRACE_DOMAIN} {
+    reverse_proxy zerotrace-auth-server:8080
+}

@@ -1,0 +1,39 @@
+services:
+  zerotrace-auth-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zerotrace-auth-server
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SERVER_PORT: 8080
+      SPRING_DATASOURCE_URL: jdbc:h2:file:/data/zerotrace;AUTO_SERVER=TRUE
+      SPRING_DATASOURCE_USERNAME: sa
+      SPRING_DATASOURCE_PASSWORD: ""
+      ZEROTRACE_H2_CONSOLE_ENABLED: "false"
+    expose:
+      - "8080"
+    volumes:
+      - zerotrace-data:/data
+
+  caddy:
+    image: caddy:2
+    container_name: zerotrace-caddy
+    restart: unless-stopped
+    depends_on:
+      - zerotrace-auth-server
+    environment:
+      ZEROTRACE_DOMAIN: ${ZEROTRACE_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  zerotrace-data:
+  caddy-data:
+  caddy-config:
