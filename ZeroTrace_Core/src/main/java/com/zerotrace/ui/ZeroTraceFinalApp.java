@@ -1,6 +1,11 @@
 package com.zerotrace.ui;
 
+import javafx.animation.Animation;
+import javafx.animation.FadeTransition;
+import javafx.animation.KeyFrame;
+import javafx.animation.Timeline;
 import com.zerotrace.core.EncryptionService;
+import com.zerotrace.core.safety.TextSafetyInspector;
 import com.zerotrace.core.client.AuthClient;
 import com.zerotrace.core.client.KeyManager;
 import com.zerotrace.core.client.SessionManager;
@@ -10,6 +15,7 @@ import com.zerotrace.model.AuditExportResponse;
 import com.zerotrace.model.MessagePacket;
 import com.zerotrace.model.MessageRequest;
 import com.zerotrace.model.SendMessageResponse;
+import com.zerotrace.model.ThreatAnalysisResult;
 import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.collections.FXCollections;
@@ -39,20 +45,26 @@ import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
 import javafx.stage.Stage;
+import javafx.util.Duration;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.KeyPair;
 import java.security.PublicKey;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
 public class ZeroTraceFinalApp extends Application {
+    private static final String VIEW_OPEN_CHATS = "OPEN_CHATS";
+    private static final String VIEW_CHAT = "CHAT";
+    private static final String VIEW_OTHER = "OTHER";
 
     private final KeyManager keyManager = new KeyManager();
     private final SessionManager sessionManager = new SessionManager();
@@ -63,14 +75,18 @@ public class ZeroTraceFinalApp extends Application {
     private BorderPane mainRoot;
     private VBox peoplePanel;
     private VBox contentPanel;
+    private VBox activeChatContainer;
+    private VBox activeMessagesBox;
+    private String activeChatViewContact;
+    private String activeView = VIEW_OPEN_CHATS;
     private Label topUserLabel;
     private Label topStatusLabel;
+    private Timeline ttlSweepTimeline;
 
     private SessionManager.Session session;
     private AuthClient authClient;
     private String selectedContact;
     private boolean isDarkTheme = true;
-
     private static final String D_BG = "#1a1f2e";
     private static final String D_SURFACE = "#242938";
     private static final String D_SURFACE2 = "#2e3447";
@@ -277,12 +293,14 @@ public class ZeroTraceFinalApp extends Application {
 
         peoplePanel = buildPeopleList();
         contentPanel = buildOpenChatsContent();
+        activeView = VIEW_OPEN_CHATS;
         HBox.setHgrow(contentPanel, Priority.ALWAYS);
 
         body.getChildren().addAll(buildNavRail(), peoplePanel, contentPanel);
         mainRoot.setCenter(body);
 
         primaryStage.setScene(new Scene(mainRoot, 1440, 900));
+        startTtlSweep();
     }
 
     private HBox buildTopBar() {
@@ -370,12 +388,12 @@ public class ZeroTraceFinalApp extends Application {
 
     private void handleNavClick(String label) {
         switch (label) {
-            case "Open Chats" -> setContent(buildOpenChatsContent());
-            case "User Profile" -> setContent(buildProfilePanel());
-            case "Encryption" -> setContent(buildEncryptionPanel());
-            case "Governance" -> setContent(buildGovernancePanel());
-            case "Settings" -> setContent(buildSettingsPanel());
-            default -> setContent(buildOpenChatsContent());
+            case "Open Chats" -> showOpenChatsView();
+            case "User Profile" -> showNonChatView(buildProfilePanel());
+            case "Encryption" -> showNonChatView(buildEncryptionPanel());
+            case "Governance" -> showNonChatView(buildGovernancePanel());
+            case "Settings" -> showNonChatView(buildSettingsPanel());
+            default -> showOpenChatsView();
         }
     }
 
@@ -513,11 +531,17 @@ public class ZeroTraceFinalApp extends Application {
         selectedContact = contactName;
         addContact(contactName);
         refreshPeoplePanel();
+        activeView = VIEW_CHAT;
         setContent(buildChatArea(contactName));
+        if (session != null && authClient != null) {
+            refreshInbox(false);
+        }
     }
 
     private VBox buildChatArea(String contactName) {
+        activeChatViewContact = contactName;
         VBox chatArea = new VBox();
+        activeChatContainer = chatArea;
         VBox.setVgrow(chatArea, Priority.ALWAYS);
         chatArea.setStyle("-fx-background-color:" + bg() + ";");
 
@@ -539,6 +563,7 @@ public class ZeroTraceFinalApp extends Application {
 
         VBox messagesBox = new VBox(10);
         messagesBox.setPadding(new Insets(16));
+        activeMessagesBox = messagesBox;
         renderConversation(messagesBox, contactName);
 
         ScrollPane scrollPane = new ScrollPane(messagesBox);
@@ -563,6 +588,16 @@ public class ZeroTraceFinalApp extends Application {
 
         Button sendBtn = accentBtn("Send", 13);
         Label actionLabel = mk("", FontWeight.NORMAL, 11, tm());
+        Label hiddenTextWarningLabel = mk("", FontWeight.BOLD, 11, danger());
+        hiddenTextWarningLabel.setWrapText(true);
+        hiddenTextWarningLabel.setVisible(false);
+        hiddenTextWarningLabel.setManaged(false);
+        messageField.textProperty().addListener((obs, oldValue, newValue) -> {
+            TextSafetyInspector.InspectionResult inspection = TextSafetyInspector.inspect(newValue);
+            hiddenTextWarningLabel.setText(inspection.flagged() ? "Hidden-text flag: " + inspection.summary() : "");
+            hiddenTextWarningLabel.setVisible(inspection.flagged());
+            hiddenTextWarningLabel.setManaged(inspection.flagged());
+        });
 
         Runnable sendAction = () -> {
             String message = messageField.getText().trim();
@@ -570,16 +605,25 @@ public class ZeroTraceFinalApp extends Application {
                 actionLabel.setText("Enter a message first.");
                 return;
             }
+            TextSafetyInspector.InspectionResult inspection = TextSafetyInspector.inspect(message);
             String mode = modeBox.getValue();
             Integer ttl = "AUDIT".equalsIgnoreCase(mode) ? null : ttlSpinner.getValue();
 
             runTask(() -> sendSecureMessage(contactName, message, mode, ttl), responseObj -> {
                 SendMessageResponse response = (SendMessageResponse) responseObj;
-                addOutgoingMessage(contactName, message, mode, ttl);
+                addOutgoingMessage(contactName, message, mode, ttl, response.getThreatAnalysis(), inspection);
                 renderConversation(messagesBox, contactName);
                 messageField.clear();
+                hiddenTextWarningLabel.setText("");
+                hiddenTextWarningLabel.setVisible(false);
+                hiddenTextWarningLabel.setManaged(false);
                 scrollPane.setVvalue(1.0);
-                actionLabel.setText(renderThreatStatus(response));
+                actionLabel.setText(renderThreatStatus(response)
+                        + (inspection.flagged() ? " | Hidden-text flag: " + inspection.summary() : ""));
+                maybeShowThreatPopup(contactName, response.getThreatAnalysis());
+                if (inspection.flagged()) {
+                    showWarningPopup("Hidden Text Flag", "This outgoing message triggered the text safety checker:\n" + inspection.summary());
+                }
             }, error -> actionLabel.setText(error.getMessage()));
         };
 
@@ -597,7 +641,7 @@ public class ZeroTraceFinalApp extends Application {
         HBox inputBar = new HBox(10, messageField, sendBtn);
         inputBar.setAlignment(Pos.CENTER);
 
-        VBox composer = new VBox(10, controls, inputBar, actionLabel);
+        VBox composer = new VBox(10, controls, hiddenTextWarningLabel, inputBar, actionLabel);
         composer.setPadding(new Insets(14, 16, 14, 16));
         composer.setStyle("-fx-background-color:" + surf() + ";"
                 + "-fx-border-color:" + bord() + ";-fx-border-width:1 0 0 0;");
@@ -823,45 +867,125 @@ public class ZeroTraceFinalApp extends Application {
 
         runTask(() -> {
             KeyPair receiverKeys = keyManager.loadOrCreate(session.username());
-            List<MessagePacket> packets = authClient.fetchInbox(session.username());
-            List<ChatEntry> entries = new ArrayList<>();
-            for (MessagePacket packet : packets) {
-                PublicKey senderPublicKey = RSAUtil.getPublicKeyFromString(authClient.getPublicKey(packet.getSender()));
-                String plaintext;
-                try {
-                    plaintext = EncryptionService.decryptFromRelay(packet, receiverKeys.getPrivate(), senderPublicKey);
-                } catch (Exception securityException) {
-                    plaintext = "Rejected tampered message (" + securityException.getMessage() + ")";
-                }
-                entries.add(new ChatEntry(packet.getSender(), plaintext, packet.getMode(), packet.getTtlSeconds(), packet.getCreatedAt(), false));
+            List<MessagePacket> newPackets = authClient.fetchInbox(session.username());
+            List<ChatEntry> entries = decryptPackets(newPackets, receiverKeys);
+            List<ChatEntry> historyEntries = loadHistoryEntries(receiverKeys);
+            return new RefreshResult(entries, historyEntries);
+        }, resultObj -> {
+            RefreshResult result = (RefreshResult) resultObj;
+            List<ChatEntry> entries = result.newEntries();
+            List<ChatEntry> historyEntries = result.historyEntries();
+            for (ChatEntry entry : historyEntries) {
+                addIncomingMessage(
+                        entry.sender(),
+                        entry.message(),
+                        entry.mode(),
+                        entry.ttlSeconds(),
+                        entry.createdAt(),
+                        entry.deliveredAt()
+                );
             }
-            return entries;
-        }, entriesObj -> {
-            @SuppressWarnings("unchecked")
-            List<ChatEntry> entries = (List<ChatEntry>) entriesObj;
             for (ChatEntry entry : entries) {
-                addIncomingMessage(entry.sender(), entry.message(), entry.mode(), entry.ttlSeconds(), entry.createdAt());
+                addIncomingMessage(
+                        entry.sender(),
+                        entry.message(),
+                        entry.mode(),
+                        entry.ttlSeconds(),
+                        entry.createdAt(),
+                        entry.deliveredAt()
+                );
             }
+            List<ChatEntry> allEntries = new ArrayList<>(historyEntries);
+            allEntries.addAll(entries);
+            maybeShowInboxSecurityPopups(allEntries);
             refreshPeoplePanel();
-            if (selectedContact != null) {
-                setContent(buildChatArea(selectedContact));
-            } else {
+            if (VIEW_CHAT.equals(activeView)
+                    && selectedContact != null
+                    && selectedContact.equals(activeChatViewContact)
+                    && activeMessagesBox != null) {
+                renderConversation(activeMessagesBox, selectedContact);
+            } else if (VIEW_OPEN_CHATS.equals(activeView)) {
                 setContent(buildOpenChatsContent());
             }
             if (showSuccess) {
-                setTopStatus(entries.isEmpty() ? "No new messages." : "Inbox refreshed.");
+                setTopStatus(entries.isEmpty()
+                        ? (historyEntries.isEmpty() ? "Inbox checked. No visible messages." : "Inbox checked. History reloaded.")
+                        : "Inbox refreshed.");
             }
         }, error -> errorDialog("Inbox Refresh Failed", error.getMessage()));
     }
 
-    private void addOutgoingMessage(String contact, String message, String mode, Integer ttlSeconds) {
+    private List<ChatEntry> loadHistoryEntries(KeyPair receiverKeys) throws Exception {
+        try {
+            List<MessagePacket> historyPackets = authClient.fetchHistory(session.username());
+            return decryptPackets(historyPackets, receiverKeys);
+        } catch (Exception ignored) {
+            return List.of();
+        }
+    }
+
+    private List<ChatEntry> decryptPackets(List<MessagePacket> packets, KeyPair receiverKeys) throws Exception {
+        List<ChatEntry> entries = new ArrayList<>();
+        for (MessagePacket packet : packets) {
+            PublicKey senderPublicKey = RSAUtil.getPublicKeyFromString(authClient.getPublicKey(packet.getSender()));
+            String plaintext;
+            try {
+                plaintext = EncryptionService.decryptFromRelay(packet, receiverKeys.getPrivate(), senderPublicKey);
+            } catch (Exception securityException) {
+                plaintext = "Rejected tampered message (" + securityException.getMessage() + ")";
+            }
+            TextSafetyInspector.InspectionResult inspection = TextSafetyInspector.inspect(plaintext);
+            entries.add(new ChatEntry(
+                    packet.getSender(),
+                    plaintext,
+                    packet.getMode(),
+                    packet.getTtlSeconds(),
+                    packet.getCreatedAt(),
+                    packet.getDeliveredAt(),
+                    false,
+                    null,
+                    null,
+                    inspection.flagged(),
+                    inspection.flagged() ? inspection.summary() : null
+            ));
+        }
+        return entries;
+    }
+
+    private void addOutgoingMessage(
+            String contact,
+            String message,
+            String mode,
+            Integer ttlSeconds,
+            ThreatAnalysisResult threatAnalysis,
+            TextSafetyInspector.InspectionResult inspection
+    ) {
         addContact(contact);
         chatHistory.computeIfAbsent(contact, key -> new ArrayList<>())
-                .add(new ChatEntry(session.username(), message, mode, ttlSeconds, "now", true));
+                .add(new ChatEntry(
+                        session.username(),
+                        message,
+                        mode,
+                        ttlSeconds,
+                        Instant.now().toString(),
+                        null,
+                        true,
+                        threatAnalysis == null ? null : threatAnalysis.getVerdict(),
+                        threatAnalysis == null ? null : threatAnalysis.getDetail(),
+                        inspection != null && inspection.flagged(),
+                        inspection != null && inspection.flagged() ? inspection.summary() : null
+                ));
         refreshPeoplePanel();
     }
 
-    private void addIncomingMessage(String contact, String message, String mode, Integer ttlSeconds, String createdAt) {
+    private void addIncomingMessage(
+            String contact,
+            String message,
+            String mode,
+            Integer ttlSeconds,
+            String createdAt,
+            String deliveredAt
+    ) {
         addContact(contact);
         List<ChatEntry> history = chatHistory.computeIfAbsent(contact, key -> new ArrayList<>());
         boolean duplicate = history.stream().anyMatch(entry ->
@@ -871,11 +995,25 @@ public class ZeroTraceFinalApp extends Application {
                         && entry.mode().equals(mode)
         );
         if (!duplicate) {
-            history.add(new ChatEntry(contact, message, mode, ttlSeconds, createdAt, false));
+            TextSafetyInspector.InspectionResult inspection = TextSafetyInspector.inspect(message);
+            history.add(new ChatEntry(
+                    contact,
+                    message,
+                    mode,
+                    ttlSeconds,
+                    createdAt,
+                    deliveredAt,
+                    false,
+                    null,
+                    null,
+                    inspection.flagged(),
+                    inspection.flagged() ? inspection.summary() : null
+            ));
         }
     }
 
     private void addContact(String contact) {
+        chatHistory.computeIfAbsent(contact, key -> new ArrayList<>());
         LinkedHashSet<String> ordered = new LinkedHashSet<>();
         ordered.add(contact);
         ordered.addAll(contacts);
@@ -900,6 +1038,7 @@ public class ZeroTraceFinalApp extends Application {
     }
 
     private void renderConversation(VBox messagesBox, String contactName) {
+        pruneExpiredReceivedMessages();
         messagesBox.getChildren().clear();
         List<ChatEntry> history = new ArrayList<>(chatHistory.getOrDefault(contactName, List.of()));
         history.sort(Comparator.comparing(ChatEntry::createdAt));
@@ -911,9 +1050,24 @@ public class ZeroTraceFinalApp extends Application {
 
         for (ChatEntry entry : history) {
             if (entry.outgoing()) {
-                messagesBox.getChildren().add(sentBubble(entry.message(), entry.mode(), entry.ttlSeconds()));
+                messagesBox.getChildren().add(sentBubble(
+                        entry.message(),
+                        entry.mode(),
+                        entry.ttlSeconds(),
+                        entry.threatVerdict(),
+                        entry.threatDetail(),
+                        entry.embeddedTextFlagged(),
+                        entry.embeddedTextDetail()
+                ));
             } else {
-                messagesBox.getChildren().add(recvBubble(contactName, entry.message(), entry.mode(), entry.ttlSeconds()));
+                messagesBox.getChildren().add(recvBubble(
+                        contactName,
+                        entry.message(),
+                        entry.mode(),
+                        entry.ttlSeconds(),
+                        entry.embeddedTextFlagged(),
+                        entry.embeddedTextDetail()
+                ));
             }
         }
     }
@@ -923,9 +1077,25 @@ public class ZeroTraceFinalApp extends Application {
         contentPanel = pane;
         HBox.setHgrow(contentPanel, Priority.ALWAYS);
         body.getChildren().set(2, contentPanel);
+        if (pane != activeChatContainer) {
+            activeChatContainer = null;
+            activeMessagesBox = null;
+            activeChatViewContact = null;
+        }
+    }
+
+    private void showOpenChatsView() {
+        activeView = VIEW_OPEN_CHATS;
+        setContent(buildOpenChatsContent());
+    }
+
+    private void showNonChatView(VBox pane) {
+        activeView = VIEW_OTHER;
+        setContent(pane);
     }
 
     private void logout() {
+        stopTtlSweep();
         try {
             sessionManager.clear();
         } catch (Exception ignored) {
@@ -933,9 +1103,63 @@ public class ZeroTraceFinalApp extends Application {
         session = null;
         authClient = null;
         selectedContact = null;
+        activeView = VIEW_OPEN_CHATS;
+        activeChatContainer = null;
+        activeMessagesBox = null;
+        activeChatViewContact = null;
         contacts.clear();
         chatHistory.clear();
         showLoginPage();
+    }
+
+    private void startTtlSweep() {
+        stopTtlSweep();
+        ttlSweepTimeline = new Timeline(new KeyFrame(Duration.seconds(1), event -> {
+            if (pruneExpiredReceivedMessages()) {
+                refreshPeoplePanel();
+                if (VIEW_CHAT.equals(activeView)
+                        && selectedContact != null
+                        && selectedContact.equals(activeChatViewContact)
+                        && activeMessagesBox != null) {
+                    renderConversation(activeMessagesBox, selectedContact);
+                } else if (VIEW_OPEN_CHATS.equals(activeView)) {
+                    setContent(buildOpenChatsContent());
+                }
+            }
+        }));
+        ttlSweepTimeline.setCycleCount(Animation.INDEFINITE);
+        ttlSweepTimeline.play();
+    }
+
+    private void stopTtlSweep() {
+        if (ttlSweepTimeline != null) {
+            ttlSweepTimeline.stop();
+            ttlSweepTimeline = null;
+        }
+    }
+
+    private boolean pruneExpiredReceivedMessages() {
+        boolean changed = false;
+        Instant now = Instant.now();
+        for (List<ChatEntry> history : chatHistory.values()) {
+            changed |= history.removeIf(entry -> isExpiredReceivedPrivateMessage(entry, now));
+        }
+        return changed;
+    }
+
+    private boolean isExpiredReceivedPrivateMessage(ChatEntry entry, Instant now) {
+        if (entry == null || entry.outgoing()) {
+            return false;
+        }
+        if (!"PRIVATE".equalsIgnoreCase(entry.mode()) || entry.ttlSeconds() == null || entry.deliveredAt() == null) {
+            return false;
+        }
+        try {
+            Instant deliveredAt = Instant.parse(entry.deliveredAt());
+            return !deliveredAt.plusSeconds(entry.ttlSeconds()).isAfter(now);
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private void runTask(TaskSupplier supplier, TaskSuccess success, TaskFailure failure) {
@@ -969,20 +1193,44 @@ public class ZeroTraceFinalApp extends Application {
         return pane;
     }
 
-    private HBox sentBubble(String message, String mode, Integer ttlSeconds) {
+    private HBox sentBubble(
+            String message,
+            String mode,
+            Integer ttlSeconds,
+            String threatVerdict,
+            String threatDetail,
+            boolean embeddedTextFlagged,
+            String embeddedTextDetail
+    ) {
         VBox content = new VBox(3);
         content.setAlignment(Pos.CENTER_RIGHT);
+        if (shouldShowThreatAlert(threatVerdict)) {
+            content.getChildren().add(threatAlert(threatVerdict, threatDetail));
+        }
+        if (embeddedTextFlagged) {
+            content.getChildren().add(embeddedTextAlert(embeddedTextDetail));
+        }
         content.getChildren().addAll(
-                mk(modeLabel(mode, ttlSeconds), FontWeight.BOLD, 10, "#ffffff"),
-                bubbleLabel(message, bsent(), "#ffffff", 12, 12, 2, 12)
+            mk(modeLabel(mode, ttlSeconds), FontWeight.BOLD, 10, "#ffffff"),
+            bubbleLabel(message, bsent(), "#ffffff", 12, 12, 2, 12)
         );
         HBox box = new HBox(content);
         box.setAlignment(Pos.CENTER_RIGHT);
         return box;
     }
 
-    private HBox recvBubble(String sender, String message, String mode, Integer ttlSeconds) {
+    private HBox recvBubble(
+            String sender,
+            String message,
+            String mode,
+            Integer ttlSeconds,
+            boolean embeddedTextFlagged,
+            String embeddedTextDetail
+    ) {
         VBox content = new VBox(3);
+        if (embeddedTextFlagged) {
+            content.getChildren().add(embeddedTextAlert(embeddedTextDetail));
+        }
         content.getChildren().addAll(
                 mk(sender + "  |  " + modeLabel(mode, ttlSeconds), FontWeight.BOLD, 10, adim()),
                 bubbleLabel(message, brecv(), t1(), 12, 12, 12, 2)
@@ -1160,6 +1408,22 @@ public class ZeroTraceFinalApp extends Application {
         alert.showAndWait();
     }
 
+    private void showWarningPopup(String title, String content) {
+        Alert alert = new Alert(Alert.AlertType.WARNING, content, ButtonType.OK);
+        alert.setTitle(title);
+        alert.setHeaderText(null);
+        styleDialog(alert);
+        alert.showAndWait();
+    }
+
+    private void showErrorPopup(String title, String content) {
+        Alert alert = new Alert(Alert.AlertType.ERROR, content, ButtonType.OK);
+        alert.setTitle(title);
+        alert.setHeaderText(null);
+        styleDialog(alert);
+        alert.showAndWait();
+    }
+
     private void errorDialog(String title, String content) {
         Alert alert = new Alert(Alert.AlertType.ERROR, content, ButtonType.OK);
         alert.setTitle(title);
@@ -1201,12 +1465,117 @@ public class ZeroTraceFinalApp extends Application {
         return ttlSeconds == null ? "PRIVATE" : "PRIVATE | TTL " + ttlSeconds + "s";
     }
 
+    private boolean shouldShowThreatAlert(String threatVerdict) {
+        return "ANOMALY".equalsIgnoreCase(threatVerdict) || "SUSPICIOUS".equalsIgnoreCase(threatVerdict);
+    }
+
+    private void maybeShowThreatPopup(String contactName, ThreatAnalysisResult threatAnalysis) {
+        if (threatAnalysis == null || !shouldShowThreatAlert(threatAnalysis.getVerdict())) {
+            return;
+        }
+
+        String detail = safe(threatAnalysis.getDetail(), "Threat monitor flagged this message.");
+        if ("ANOMALY".equalsIgnoreCase(threatAnalysis.getVerdict())) {
+            showErrorPopup(
+                    "Anomaly Detected",
+                    "Traffic to " + contactName + " was flagged by the AI monitor.\n\n"
+                            + threatAnalysis.getVerdict() + ": " + detail
+            );
+            return;
+        }
+
+        showWarningPopup(
+                "Suspicious Activity",
+                "Traffic to " + contactName + " raised a threat warning.\n\n"
+                        + threatAnalysis.getVerdict() + ": " + detail
+        );
+    }
+
+    private void maybeShowInboxSecurityPopups(List<ChatEntry> entries) {
+        if (entries == null || entries.isEmpty()) {
+            return;
+        }
+
+        long tamperedCount = entries.stream()
+                .filter(entry -> entry.message() != null && entry.message().startsWith("Rejected tampered message"))
+                .count();
+        if (tamperedCount > 0) {
+            showErrorPopup(
+                    "Tampered Message Rejected",
+                    tamperedCount + " incoming message(s) failed integrity verification and were blocked."
+            );
+        }
+
+        List<ChatEntry> hiddenTextFlags = entries.stream()
+                .filter(ChatEntry::embeddedTextFlagged)
+                .toList();
+        if (!hiddenTextFlags.isEmpty()) {
+            ChatEntry first = hiddenTextFlags.get(0);
+            showWarningPopup(
+                    "Hidden Text Flag",
+                    hiddenTextFlags.size() + " incoming message(s) triggered the text safety checker.\n\n"
+                            + safe(first.embeddedTextDetail(), "Embedded or invisible text pattern detected.")
+            );
+        }
+    }
+
+    private Label threatAlert(String threatVerdict, String threatDetail) {
+        String body = safe(threatDetail, "Threat monitor flagged this message.");
+        Label label = new Label(threatVerdict.toUpperCase(Locale.ROOT) + " DETECTED  |  " + body);
+        label.setWrapText(true);
+        label.setMaxWidth(460);
+        label.setFont(Font.font("Monospace", FontWeight.EXTRA_BOLD, 12));
+        label.setTextFill(Color.web("#ffffff"));
+        label.setPadding(new Insets(9, 14, 9, 14));
+        label.setStyle("-fx-background-color:#ff1744;"
+                + "-fx-background-radius:10;"
+                + "-fx-border-color:#ffffff;"
+                + "-fx-border-radius:10;-fx-border-width:2;");
+
+        FadeTransition flash = new FadeTransition(Duration.millis(650), label);
+        flash.setFromValue(1.0);
+        flash.setToValue(0.35);
+        flash.setAutoReverse(true);
+        flash.setCycleCount(Animation.INDEFINITE);
+        flash.play();
+        return label;
+    }
+
+    private Label embeddedTextAlert(String detail) {
+        Label label = new Label("HIDDEN TEXT FLAG  |  " + safe(detail, "Embedded or invisible text pattern detected."));
+        label.setWrapText(true);
+        label.setMaxWidth(420);
+        label.setFont(Font.font("Monospace", FontWeight.BOLD, 11));
+        label.setTextFill(Color.web("#1a1f2e"));
+        label.setPadding(new Insets(7, 12, 7, 12));
+        label.setStyle("-fx-background-color:#ffd666;"
+                + "-fx-background-radius:10;"
+                + "-fx-border-color:#ffec99;"
+                + "-fx-border-radius:10;-fx-border-width:1.5;");
+        return label;
+    }
+
     @SuppressWarnings("unchecked")
     private List<AuditExportResponse> castExportList(Object value) {
         return (List<AuditExportResponse>) value;
     }
 
-    private record ChatEntry(String sender, String message, String mode, Integer ttlSeconds, String createdAt, boolean outgoing) {
+    private record RefreshResult(List<ChatEntry> newEntries, List<ChatEntry> historyEntries) {
+    }
+
+    private record ChatEntry(
+            String sender,
+            String message,
+            String mode,
+            Integer ttlSeconds,
+            String createdAt,
+            String deliveredAt,
+            boolean outgoing,
+            String threatVerdict,
+            String threatDetail,
+            boolean embeddedTextFlagged,
+            String embeddedTextDetail
+    ) {
     }
 
     private record LoginContext(SessionManager.Session session, AuthClient authClient) {

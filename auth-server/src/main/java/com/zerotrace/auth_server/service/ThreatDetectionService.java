@@ -22,6 +22,10 @@ public class ThreatDetectionService {
     public ThreatAnalysisResult analyzeOutboundTraffic(User sender, int messageSize, int ipChanges) {
         Instant oneMinuteAgo = Instant.now().minusSeconds(60);
         long recentMessageCount = messageRepository.countBySenderAndCreatedAtAfter(sender.getUsername(), oneMinuteAgo);
+        long recentUniqueReceivers = messageRepository.countDistinctReceiversBySenderAndCreatedAtAfter(
+                sender.getUsername(),
+                oneMinuteAgo
+        );
 
         double avgGap = recentMessageCount <= 1
                 ? 60.0
@@ -31,7 +35,7 @@ public class ThreatDetectionService {
                 (int) recentMessageCount + 1,
                 avgGap,
                 messageSize,
-                1,
+                (int) Math.max(1, recentUniqueReceivers),
                 sender.getFailedLoginAttempts(),
                 ipChanges
         );

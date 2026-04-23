@@ -12,6 +12,7 @@ public class MessagePacket {
     private String mode;
     private Integer ttlSeconds;
     private String createdAt;
+    private String deliveredAt;
 
     public MessagePacket() {
     }
@@ -26,7 +27,8 @@ public class MessagePacket {
             String iv,
             String mode,
             Integer ttlSeconds,
-            String createdAt
+            String createdAt,
+            String deliveredAt
     ) {
         this.id = id;
         this.sender = sender;
@@ -38,6 +40,7 @@ public class MessagePacket {
         this.mode = mode;
         this.ttlSeconds = ttlSeconds;
         this.createdAt = createdAt;
+        this.deliveredAt = deliveredAt;
     }
 
     public Long getId() {
@@ -78,5 +81,9 @@ public class MessagePacket {
 
     public String getCreatedAt() {
         return createdAt;
+    }
+
+    public String getDeliveredAt() {
+        return deliveredAt;
     }
 }

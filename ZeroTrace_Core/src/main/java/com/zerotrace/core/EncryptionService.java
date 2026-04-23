@@ -39,6 +39,7 @@ public class EncryptionService {
                 aesResult.iv,
                 null,
                 null,
+                null,
                 null
         );
     }

@@ -83,6 +83,13 @@ public class AuthClient {
         return objectMapper.readValue(response.body(), new TypeReference<>() {});
     }
 
+    public List<MessagePacket> fetchHistory(String username) throws IOException, InterruptedException {
+        HttpRequest.Builder builder = HttpRequest.newBuilder(uri("/message/history/" + encode(username))).GET();
+        authorize(builder);
+        HttpResponse<String> response = send(builder.build());
+        return objectMapper.readValue(response.body(), new TypeReference<>() {});
+    }
+
     public AuditExportResponse createExportRequest(int lookbackDays) throws IOException, InterruptedException {
         return post("/governance/export-requests", Map.of("lookbackDays", lookbackDays), AuditExportResponse.class);
     }

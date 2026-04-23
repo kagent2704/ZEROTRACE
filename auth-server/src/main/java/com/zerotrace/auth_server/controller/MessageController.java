@@ -39,4 +39,9 @@ public class MessageController {
     public List<MessagePacket> inbox(Authentication authentication, @PathVariable String username) {
         return messageRelayService.fetchInbox(authentication.getName(), username);
     }
+
+    @GetMapping("/history/{username}")
+    public List<MessagePacket> history(Authentication authentication, @PathVariable String username) {
+        return messageRelayService.fetchHistory(authentication.getName(), username);
+    }
 }

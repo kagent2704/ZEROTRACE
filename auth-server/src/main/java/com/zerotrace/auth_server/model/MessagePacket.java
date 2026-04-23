@@ -19,4 +19,5 @@ public class MessagePacket {
     private MessageMode mode;
     private Integer ttlSeconds;
     private Instant createdAt;
+    private Instant deliveredAt;
 }

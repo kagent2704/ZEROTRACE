@@ -61,7 +61,7 @@ public class MessageRelayService {
         message.setMode(mode);
         message.setTtlSeconds(normalizeTtl(request.getTtlSeconds(), mode));
         if (mode == MessageMode.PRIVATE) {
-            message.setExpiresAt(Instant.now().plusSeconds(message.getTtlSeconds()));
+            message.setExpiresAt(null);
         } else {
             message.setAuditRetainUntil(Instant.now().plus(7, ChronoUnit.DAYS));
         }
@@ -87,10 +87,16 @@ public class MessageRelayService {
                         || message.getExpiresAt() == null
                         || message.getExpiresAt().isAfter(now))
                 .toList();
-        Instant deliveredAt = Instant.now();
-
-        messages.forEach(message -> message.setDeliveredAt(deliveredAt));
-        messageRepository.saveAll(messages);
+        if (!messages.isEmpty()) {
+            Instant deliveredAt = Instant.now();
+            messages.forEach(message -> {
+                message.setDeliveredAt(deliveredAt);
+                if (message.getMode() == MessageMode.PRIVATE && message.getTtlSeconds() != null) {
+                    message.setExpiresAt(deliveredAt.plusSeconds(message.getTtlSeconds()));
+                }
+            });
+            messageRepository.saveAll(messages);
+        }
 
         return messages.stream()
                 .map(message -> new MessagePacket(
@@ -103,7 +109,31 @@ public class MessageRelayService {
                         message.getIv(),
                         message.getMode(),
                         message.getTtlSeconds(),
-                        message.getCreatedAt()
+                        message.getCreatedAt(),
+                        message.getDeliveredAt()
+                ))
+                .toList();
+    }
+
+    public List<MessagePacket> fetchHistory(String authenticatedUsername, String username) {
+        if (!authenticatedUsername.equals(username)) {
+            throw new IllegalArgumentException("History access denied for this user");
+        }
+        userService.getUser(username);
+        Instant now = Instant.now();
+        return messageRepository.findVisibleHistoryForReceiver(username, now).stream()
+                .map(message -> new MessagePacket(
+                        message.getId(),
+                        message.getSender(),
+                        message.getReceiver(),
+                        message.getEncryptedMessage(),
+                        message.getEncryptedAESKey(),
+                        message.getSignature(),
+                        message.getIv(),
+                        message.getMode(),
+                        message.getTtlSeconds(),
+                        message.getCreatedAt(),
+                        message.getDeliveredAt()
                 ))
                 .toList();
     }
