@@ -882,7 +882,9 @@ public class ZeroTraceFinalApp extends Application {
                         entry.mode(),
                         entry.ttlSeconds(),
                         entry.createdAt(),
-                        entry.deliveredAt()
+                        entry.deliveredAt(),
+                        entry.threatVerdict(),
+                        entry.threatDetail()
                 );
             }
             for (ChatEntry entry : entries) {
@@ -892,7 +894,9 @@ public class ZeroTraceFinalApp extends Application {
                         entry.mode(),
                         entry.ttlSeconds(),
                         entry.createdAt(),
-                        entry.deliveredAt()
+                        entry.deliveredAt(),
+                        entry.threatVerdict(),
+                        entry.threatDetail()
                 );
             }
             List<ChatEntry> allEntries = new ArrayList<>(historyEntries);
@@ -943,8 +947,8 @@ public class ZeroTraceFinalApp extends Application {
                     packet.getCreatedAt(),
                     packet.getDeliveredAt(),
                     false,
-                    null,
-                    null,
+                    packet.getThreatVerdict(),
+                    packet.getThreatDetail(),
                     inspection.flagged(),
                     inspection.flagged() ? inspection.summary() : null
             ));
@@ -984,7 +988,9 @@ public class ZeroTraceFinalApp extends Application {
             String mode,
             Integer ttlSeconds,
             String createdAt,
-            String deliveredAt
+            String deliveredAt,
+            String threatVerdict,
+            String threatDetail
     ) {
         addContact(contact);
         List<ChatEntry> history = chatHistory.computeIfAbsent(contact, key -> new ArrayList<>());
@@ -1004,8 +1010,8 @@ public class ZeroTraceFinalApp extends Application {
                     createdAt,
                     deliveredAt,
                     false,
-                    null,
-                    null,
+                    threatVerdict,
+                    threatDetail,
                     inspection.flagged(),
                     inspection.flagged() ? inspection.summary() : null
             ));
@@ -1038,7 +1044,7 @@ public class ZeroTraceFinalApp extends Application {
     }
 
     private void renderConversation(VBox messagesBox, String contactName) {
-        pruneExpiredReceivedMessages();
+        pruneExpiredPrivateMessages();
         messagesBox.getChildren().clear();
         List<ChatEntry> history = new ArrayList<>(chatHistory.getOrDefault(contactName, List.of()));
         history.sort(Comparator.comparing(ChatEntry::createdAt));
@@ -1065,6 +1071,8 @@ public class ZeroTraceFinalApp extends Application {
                         entry.message(),
                         entry.mode(),
                         entry.ttlSeconds(),
+                        entry.threatVerdict(),
+                        entry.threatDetail(),
                         entry.embeddedTextFlagged(),
                         entry.embeddedTextDetail()
                 ));
@@ -1115,7 +1123,7 @@ public class ZeroTraceFinalApp extends Application {
     private void startTtlSweep() {
         stopTtlSweep();
         ttlSweepTimeline = new Timeline(new KeyFrame(Duration.seconds(1), event -> {
-            if (pruneExpiredReceivedMessages()) {
+            if (pruneExpiredPrivateMessages()) {
                 refreshPeoplePanel();
                 if (VIEW_CHAT.equals(activeView)
                         && selectedContact != null
@@ -1138,25 +1146,32 @@ public class ZeroTraceFinalApp extends Application {
         }
     }
 
-    private boolean pruneExpiredReceivedMessages() {
+    private boolean pruneExpiredPrivateMessages() {
         boolean changed = false;
         Instant now = Instant.now();
         for (List<ChatEntry> history : chatHistory.values()) {
-            changed |= history.removeIf(entry -> isExpiredReceivedPrivateMessage(entry, now));
+            changed |= history.removeIf(entry -> isExpiredPrivateMessage(entry, now));
         }
         return changed;
     }
 
-    private boolean isExpiredReceivedPrivateMessage(ChatEntry entry, Instant now) {
-        if (entry == null || entry.outgoing()) {
+    private boolean isExpiredPrivateMessage(ChatEntry entry, Instant now) {
+        if (entry == null) {
             return false;
         }
-        if (!"PRIVATE".equalsIgnoreCase(entry.mode()) || entry.ttlSeconds() == null || entry.deliveredAt() == null) {
+        if (!"PRIVATE".equalsIgnoreCase(entry.mode()) || entry.ttlSeconds() == null) {
             return false;
         }
         try {
-            Instant deliveredAt = Instant.parse(entry.deliveredAt());
-            return !deliveredAt.plusSeconds(entry.ttlSeconds()).isAfter(now);
+            Instant startTime;
+            if (entry.outgoing()) {
+                startTime = Instant.parse(entry.createdAt());
+            } else if (entry.deliveredAt() != null) {
+                startTime = Instant.parse(entry.deliveredAt());
+            } else {
+                return false;
+            }
+            return !startTime.plusSeconds(entry.ttlSeconds()).isAfter(now);
         } catch (Exception ignored) {
             return false;
         }
@@ -1224,10 +1239,15 @@ public class ZeroTraceFinalApp extends Application {
             String message,
             String mode,
             Integer ttlSeconds,
+            String threatVerdict,
+            String threatDetail,
             boolean embeddedTextFlagged,
             String embeddedTextDetail
     ) {
         VBox content = new VBox(3);
+        if (shouldShowThreatAlert(threatVerdict)) {
+            content.getChildren().add(threatAlert(threatVerdict, threatDetail));
+        }
         if (embeddedTextFlagged) {
             content.getChildren().add(embeddedTextAlert(embeddedTextDetail));
         }
@@ -1516,6 +1536,27 @@ public class ZeroTraceFinalApp extends Application {
                     hiddenTextFlags.size() + " incoming message(s) triggered the text safety checker.\n\n"
                             + safe(first.embeddedTextDetail(), "Embedded or invisible text pattern detected.")
             );
+        }
+
+        List<ChatEntry> threatFlags = entries.stream()
+                .filter(entry -> shouldShowThreatAlert(entry.threatVerdict()))
+                .toList();
+        if (!threatFlags.isEmpty()) {
+            ChatEntry first = threatFlags.get(0);
+            String detail = safe(first.threatDetail(), "Threat monitor flagged an incoming message.");
+            if ("ANOMALY".equalsIgnoreCase(first.threatVerdict())) {
+                showErrorPopup(
+                        "Incoming Threat Alert",
+                        threatFlags.size() + " incoming message(s) were flagged by threat detection.\n\n"
+                                + first.threatVerdict() + ": " + detail
+                );
+            } else {
+                showWarningPopup(
+                        "Incoming Threat Alert",
+                        threatFlags.size() + " incoming message(s) were flagged by threat detection.\n\n"
+                                + first.threatVerdict() + ": " + detail
+                );
+            }
         }
     }
 

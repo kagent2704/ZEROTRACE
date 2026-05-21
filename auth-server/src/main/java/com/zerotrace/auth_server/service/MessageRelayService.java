@@ -60,6 +60,8 @@ public class MessageRelayService {
         message.setMessageSize(messageSize);
         message.setMode(mode);
         message.setTtlSeconds(normalizeTtl(request.getTtlSeconds(), mode));
+        message.setThreatVerdict(analysis == null ? null : analysis.getVerdict());
+        message.setThreatDetail(analysis == null ? null : analysis.getDetail());
         if (mode == MessageMode.PRIVATE) {
             message.setExpiresAt(null);
         } else {
@@ -110,7 +112,9 @@ public class MessageRelayService {
                         message.getMode(),
                         message.getTtlSeconds(),
                         message.getCreatedAt(),
-                        message.getDeliveredAt()
+                        message.getDeliveredAt(),
+                        message.getThreatVerdict(),
+                        message.getThreatDetail()
                 ))
                 .toList();
     }
@@ -133,7 +137,9 @@ public class MessageRelayService {
                         message.getMode(),
                         message.getTtlSeconds(),
                         message.getCreatedAt(),
-                        message.getDeliveredAt()
+                        message.getDeliveredAt(),
+                        message.getThreatVerdict(),
+                        message.getThreatDetail()
                 ))
                 .toList();
     }

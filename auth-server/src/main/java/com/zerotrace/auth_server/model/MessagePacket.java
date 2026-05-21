@@ -20,4 +20,6 @@ public class MessagePacket {
     private Integer ttlSeconds;
     private Instant createdAt;
     private Instant deliveredAt;
+    private String threatVerdict;
+    private String threatDetail;
 }

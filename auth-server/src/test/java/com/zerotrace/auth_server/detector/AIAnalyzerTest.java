@@ -9,18 +9,30 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class AIAnalyzerTest {
 
     @Test
-    void flagsHighRiskTrafficAsAnomaly() {
-        ThreatAnalysisResult result = AIAnalyzer.analyze(new double[]{30, 0.8, 6000, 6, 4, 3});
+    void flagsMassTargetSpreadAsAnomaly() {
+        ThreatAnalysisResult result = AIAnalyzer.analyze(new double[]{30, 1.2, 320, 12, 0, 0});
 
         assertEquals("ANOMALY", result.getVerdict());
-        assertTrue(result.getDetail().contains("DL risk"));
+        assertTrue(result.getDetail().contains("Statistical score"));
+        assertTrue(result.getDetail().contains("mass-target spread"));
+        assertTrue(!result.getDetail().contains("abnormal payload size"));
+    }
+
+    @Test
+    void flagsAbnormalPayloadSizeAsAnomaly() {
+        ThreatAnalysisResult result = AIAnalyzer.analyze(new double[]{4, 40, 5000, 1, 0, 0});
+
+        assertEquals("ANOMALY", result.getVerdict());
+        assertTrue(result.getDetail().contains("Statistical score"));
+        assertTrue(result.getDetail().contains("abnormal payload size"));
+        assertTrue(!result.getDetail().contains("mass-target spread"));
     }
 
     @Test
     void keepsNormalTrafficWithinBaseline() {
-        ThreatAnalysisResult result = AIAnalyzer.analyze(new double[]{2, 25, 256, 1, 0, 0});
+        ThreatAnalysisResult result = AIAnalyzer.analyze(new double[]{8, 45, 256, 1, 0, 0});
 
         assertEquals("NORMAL", result.getVerdict());
-        assertTrue(result.getDetail().contains("within baseline"));
+        assertTrue(result.getDetail().contains("Network behaviour normal"));
     }
 }

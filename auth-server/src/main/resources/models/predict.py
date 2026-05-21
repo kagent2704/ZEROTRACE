@@ -1,27 +1,35 @@
 import sys
 import joblib
-import numpy as np
+import pandas as pd
 import os
 
-
-def trigger_label(msg_count, avg_time_gap, msg_size, connections, failed_attempts, ip_changes):
-    if msg_count > 50 and avg_time_gap < 1:
-        return "Possible Spam Bot Activity"
-    if failed_attempts > 5:
-        return "Brute Force Authentication Attempt"
-    if ip_changes > 3:
-        return "Suspicious IP Switching Detected"
-    if msg_size > 2000:
-        return "Abnormally Large Message Payload"
-    if connections > 5:
-        return "Unusual Peer Connection Pattern"
-    return "General Network Anomaly"
+def engineered_features(msg_count, avg_time_gap, msg_size, connections, failed_attempts, ip_changes):
+    msg_count_safe = max(msg_count, 1.0)
+    avg_gap_safe = max(avg_time_gap, 0.5)
+    fanout_ratio = connections / msg_count_safe
+    spread_pressure = connections / avg_gap_safe
+    burst_fanout = (msg_count_safe * connections) / avg_gap_safe
+    return [[
+        msg_count,
+        avg_time_gap,
+        msg_size,
+        connections,
+        failed_attempts,
+        ip_changes,
+        fanout_ratio,
+        spread_pressure,
+        burst_fanout
+    ]]
 
 
 try:
     base_dir = os.path.dirname(__file__)
     model_path = os.path.join(base_dir, "anomaly_model.pkl")
-    model = joblib.load(model_path)
+    payload_model_path = os.path.join(base_dir, "payload_model.pkl")
+    spread_artifact = joblib.load(model_path)
+    payload_artifact = joblib.load(payload_model_path)
+    spread_feature_columns = spread_artifact["feature_columns"]
+    payload_feature_columns = payload_artifact["feature_columns"]
 
     msg_count = float(sys.argv[1])
     avg_time_gap = float(sys.argv[2])
@@ -30,27 +38,51 @@ try:
     failed_attempts = float(sys.argv[5])
     ip_changes = float(sys.argv[6])
 
-    data = np.array([[
+    raw_features = engineered_features(
         msg_count,
         avg_time_gap,
         msg_size,
         connections,
         failed_attempts,
         ip_changes
-    ]])
+    )[0]
+    canonical_columns = [
+        "msg_count",
+        "avg_time_gap",
+        "msg_size",
+        "connections",
+        "failed_attempts",
+        "ip_changes",
+        "fanout_ratio",
+        "spread_pressure",
+        "burst_fanout"
+    ]
+    feature_map = dict(zip(canonical_columns, raw_features))
+    spread_data = pd.DataFrame([[feature_map[column] for column in spread_feature_columns]], columns=spread_feature_columns)
+    payload_data = pd.DataFrame([[feature_map[column] for column in payload_feature_columns]], columns=payload_feature_columns)
 
-    prediction = model.predict(data)
+    spread_score = float(spread_artifact["model"].predict_proba(spread_data)[0][1])
+    payload_score = float(payload_artifact["model"].predict_proba(payload_data)[0][1])
+    spread_threshold = float(spread_artifact.get("threshold", 0.5))
+    payload_threshold = float(payload_artifact.get("threshold", 0.5))
 
-    if hasattr(model, "score_samples"):
-        score = float(-model.score_samples(data)[0])
-    elif hasattr(model, "decision_function"):
-        score = float(-model.decision_function(data)[0])
+    spread_flag = spread_score >= spread_threshold
+    payload_flag = payload_score >= payload_threshold
+
+    if spread_flag and payload_flag:
+        combined_score = max(spread_score, payload_score)
+        print(
+            "ANOMALY|"
+            f"{combined_score:.4f}|"
+            f"AI abnormal payload size pattern detected (payload score {payload_score:.4f}); "
+            f"AI mass-target spread pattern detected (spread score {spread_score:.4f})"
+        )
+    elif payload_flag:
+        print(f"ANOMALY|{payload_score:.4f}|AI abnormal payload size pattern detected")
+    elif spread_flag:
+        print(f"ANOMALY|{spread_score:.4f}|AI mass-target spread pattern detected")
     else:
-        score = 1.0 if prediction[0] == -1 else 0.0
-
-    if prediction[0] == -1:
-        print(f"ANOMALY|{score:.4f}|{trigger_label(msg_count, avg_time_gap, msg_size, connections, failed_attempts, ip_changes)}")
-    else:
+        score = max(spread_score, payload_score)
         print(f"NORMAL|{score:.4f}|Network behaviour normal")
 
 except Exception as e:

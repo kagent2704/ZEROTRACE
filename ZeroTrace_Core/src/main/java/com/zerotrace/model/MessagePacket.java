@@ -13,6 +13,8 @@ public class MessagePacket {
     private Integer ttlSeconds;
     private String createdAt;
     private String deliveredAt;
+    private String threatVerdict;
+    private String threatDetail;
 
     public MessagePacket() {
     }
@@ -28,7 +30,9 @@ public class MessagePacket {
             String mode,
             Integer ttlSeconds,
             String createdAt,
-            String deliveredAt
+            String deliveredAt,
+            String threatVerdict,
+            String threatDetail
     ) {
         this.id = id;
         this.sender = sender;
@@ -41,6 +45,8 @@ public class MessagePacket {
         this.ttlSeconds = ttlSeconds;
         this.createdAt = createdAt;
         this.deliveredAt = deliveredAt;
+        this.threatVerdict = threatVerdict;
+        this.threatDetail = threatDetail;
     }
 
     public Long getId() {
@@ -85,5 +91,13 @@ public class MessagePacket {
 
     public String getDeliveredAt() {
         return deliveredAt;
+    }
+
+    public String getThreatVerdict() {
+        return threatVerdict;
+    }
+
+    public String getThreatDetail() {
+        return threatDetail;
     }
 }

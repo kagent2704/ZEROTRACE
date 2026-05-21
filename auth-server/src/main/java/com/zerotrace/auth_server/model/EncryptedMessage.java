@@ -62,4 +62,10 @@ public class EncryptedMessage {
     private Instant expiresAt;
 
     private Instant auditRetainUntil;
+
+    @Column(length = 32)
+    private String threatVerdict;
+
+    @Column(length = 512)
+    private String threatDetail;
 }

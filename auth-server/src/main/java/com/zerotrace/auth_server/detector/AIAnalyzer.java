@@ -14,7 +14,8 @@ import java.util.Locale;
 public final class AIAnalyzer {
 
     private static final String SCRIPT_RESOURCE = "/models/predict.py";
-    private static final String MODEL_RESOURCE = "/models/anomaly_model.pkl";
+    private static final String SPREAD_MODEL_RESOURCE = "/models/anomaly_model.pkl";
+    private static final String PAYLOAD_MODEL_RESOURCE = "/models/payload_model.pkl";
     private static final PythonResources PYTHON_RESOURCES = prepareResources();
 
     private AIAnalyzer() {
@@ -44,18 +45,18 @@ public final class AIAnalyzer {
 
             int exitCode = process.waitFor();
             if (exitCode == 0 && output != null && !output.isBlank()) {
-                return parsePrediction(output.trim(), features);
+                return parsePrediction(output.trim());
             }
         } catch (Exception ignored) {
         }
 
-        return heuristicFallback(features);
+        return new ThreatAnalysisResult("NORMAL", "AI detector unavailable");
     }
 
-    private static ThreatAnalysisResult parsePrediction(String output, double[] features) {
+    private static ThreatAnalysisResult parsePrediction(String output) {
         String[] parts = output.split("\\|", 3);
         if (parts.length < 3) {
-            return heuristicFallback(features);
+            return new ThreatAnalysisResult("NORMAL", "AI detector unavailable");
         }
 
         String verdict = parts[0].trim().toUpperCase(Locale.ROOT);
@@ -63,7 +64,7 @@ public final class AIAnalyzer {
         try {
             score = Double.parseDouble(parts[1].trim());
         } catch (NumberFormatException exception) {
-            score = heuristicScore(features);
+            return new ThreatAnalysisResult("NORMAL", "AI detector unavailable");
         }
         String label = parts[2].trim();
 
@@ -80,67 +81,17 @@ public final class AIAnalyzer {
         );
     }
 
-    private static ThreatAnalysisResult heuristicFallback(double[] features) {
-        double score = heuristicScore(features);
-        String label = triggerLabel(features);
-        if (!"Network behaviour normal".equals(label)) {
-            return new ThreatAnalysisResult(
-                    "ANOMALY",
-                    String.format(Locale.ROOT, "Statistical score %.4f - %s", score, label)
-            );
-        }
-        return new ThreatAnalysisResult(
-                "NORMAL",
-                String.format(Locale.ROOT, "Statistical score %.4f - Network behaviour normal", score)
-        );
-    }
-
-    private static double heuristicScore(double[] features) {
-        double score = 0.0;
-        score += Math.min(1.0, features[0] / 50.0) * 0.25;
-        score += Math.min(1.0, Math.max(0.0, 1.0 - (features[1] / 5.0))) * 0.15;
-        score += Math.min(1.0, features[2] / 2000.0) * 0.15;
-        score += Math.min(1.0, features[3] / 5.0) * 0.15;
-        score += Math.min(1.0, features[4] / 5.0) * 0.15;
-        score += Math.min(1.0, features[5] / 3.0) * 0.15;
-        return Math.max(0.0, Math.min(1.0, score));
-    }
-
-    private static String triggerLabel(double[] features) {
-        double msgCount = features[0];
-        double avgGap = features[1];
-        double msgSize = features[2];
-        double connections = features[3];
-        double failedAttempts = features[4];
-        double ipChanges = features[5];
-
-        if (msgCount > 50 && avgGap < 1.0) {
-            return "Possible Spam Bot Activity";
-        }
-        if (failedAttempts > 5) {
-            return "Brute Force Authentication Attempt";
-        }
-        if (ipChanges > 3) {
-            return "Suspicious IP Switching Detected";
-        }
-        if (msgSize > 2000) {
-            return "Abnormally Large Message Payload";
-        }
-        if (connections > 5) {
-            return "Unusual Peer Connection Pattern";
-        }
-        return "Network behaviour normal";
-    }
-
     private static PythonResources prepareResources() {
         try {
             Path resourceDir = Files.createTempDirectory("zerotrace-threat-model");
             resourceDir.toFile().deleteOnExit();
             Path scriptPath = resourceDir.resolve("predict.py");
-            Path modelPath = resourceDir.resolve("anomaly_model.pkl");
+            Path spreadModelPath = resourceDir.resolve("anomaly_model.pkl");
+            Path payloadModelPath = resourceDir.resolve("payload_model.pkl");
             copyResource(SCRIPT_RESOURCE, scriptPath);
-            copyResource(MODEL_RESOURCE, modelPath);
-            return new PythonResources(scriptPath, modelPath);
+            copyResource(SPREAD_MODEL_RESOURCE, spreadModelPath);
+            copyResource(PAYLOAD_MODEL_RESOURCE, payloadModelPath);
+            return new PythonResources(scriptPath, spreadModelPath, payloadModelPath);
         } catch (Exception exception) {
             throw new IllegalStateException("Unable to prepare AI model resources", exception);
         }
@@ -164,6 +115,6 @@ public final class AIAnalyzer {
         return "python";
     }
 
-    private record PythonResources(Path scriptPath, Path modelPath) {
+    private record PythonResources(Path scriptPath, Path spreadModelPath, Path payloadModelPath) {
     }
 }

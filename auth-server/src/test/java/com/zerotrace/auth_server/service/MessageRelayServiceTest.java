@@ -3,7 +3,11 @@ package com.zerotrace.auth_server.service;
 import com.zerotrace.auth_server.model.EncryptedMessage;
 import com.zerotrace.auth_server.model.MessageMode;
 import com.zerotrace.auth_server.model.MessagePacket;
+import com.zerotrace.auth_server.model.MessageRequest;
+import com.zerotrace.auth_server.model.ThreatAnalysisResult;
+import com.zerotrace.auth_server.model.User;
 import com.zerotrace.auth_server.repository.EncryptedMessageRepository;
+import jakarta.servlet.http.HttpServletRequest;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -12,6 +16,8 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -41,6 +47,8 @@ class MessageRelayServiceTest {
         assertEquals("alice", inbox.get(0).getSender());
         assertEquals(60, inbox.get(0).getTtlSeconds());
         assertEquals(true, inbox.get(0).getDeliveredAt() != null);
+        assertEquals("ANOMALY", inbox.get(0).getThreatVerdict());
+        assertEquals("Model flagged a relay anomaly.", inbox.get(0).getThreatDetail());
         assertEquals("carol", inbox.get(1).getSender());
         assertNull(inbox.get(1).getTtlSeconds());
         verify(userService).getUser("bob");
@@ -69,6 +77,46 @@ class MessageRelayServiceTest {
         verify(messageRepository).saveAll(any());
     }
 
+    @Test
+    void relayStoresThreatAnalysisOnMessage() {
+        EncryptedMessageRepository messageRepository = mock(EncryptedMessageRepository.class);
+        UserService userService = mock(UserService.class);
+        ThreatDetectionService threatDetectionService = mock(ThreatDetectionService.class);
+        MessageRelayService service = new MessageRelayService(messageRepository, userService, threatDetectionService);
+
+        User sender = new User();
+        sender.setUsername("alice");
+        sender.setOrganization("org");
+        User receiver = new User();
+        receiver.setUsername("bob");
+        receiver.setOrganization("org");
+
+        when(userService.getUser("alice")).thenReturn(sender);
+        when(userService.getUser("bob")).thenReturn(receiver);
+        when(threatDetectionService.analyzeOutboundTraffic(eq(sender), eq("ciphertext".length()), eq(0)))
+                .thenReturn(new ThreatAnalysisResult("SUSPICIOUS", "Burst traffic detected."));
+        when(messageRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        MessageRequest request = new MessageRequest();
+        request.setSender("alice");
+        request.setReceiver("bob");
+        request.setEncryptedMessage("ciphertext");
+        request.setEncryptedAESKey("aes");
+        request.setSignature("sig");
+        request.setIv("iv");
+        request.setMode("PRIVATE");
+        request.setTtlSeconds(60);
+        HttpServletRequest httpRequest = mock(HttpServletRequest.class);
+        when(httpRequest.getRemoteAddr()).thenReturn("127.0.0.1");
+
+        service.relay("alice", request, httpRequest);
+
+        verify(messageRepository).save(argThat(message ->
+                "SUSPICIOUS".equals(message.getThreatVerdict())
+                        && "Burst traffic detected.".equals(message.getThreatDetail())
+        ));
+    }
+
     private static EncryptedMessage privateMessage(String sender, String receiver, Instant createdAt, int ttlSeconds) {
         EncryptedMessage message = new EncryptedMessage();
         message.setSender(sender);
@@ -82,6 +130,8 @@ class MessageRelayServiceTest {
         message.setTtlSeconds(ttlSeconds);
         message.setCreatedAt(createdAt);
         message.setExpiresAt(null);
+        message.setThreatVerdict("ANOMALY");
+        message.setThreatDetail("Model flagged a relay anomaly.");
         return message;
     }
 

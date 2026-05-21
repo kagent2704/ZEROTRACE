@@ -31,11 +31,14 @@ public class ThreatDetectionService {
                 ? 60.0
                 : Duration.ofSeconds(60).toMillis() / (double) recentMessageCount / 1000.0;
 
+        int projectedMessageCount = (int) recentMessageCount + 1;
+        int projectedConnections = (int) recentUniqueReceivers + 1;
+
         double[] features = FeatureExtractor.extractFeatures(
-                (int) recentMessageCount + 1,
+                projectedMessageCount,
                 avgGap,
                 messageSize,
-                (int) Math.max(1, recentUniqueReceivers),
+                projectedConnections,
                 sender.getFailedLoginAttempts(),
                 ipChanges
         );
